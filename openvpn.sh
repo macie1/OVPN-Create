@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Secure OpenVPN server installer for Debian, Ubuntu, CentOS, Amazon Linux 2, Fedora and Arch Linux
-# https://github.com/angristan/openvpn-install
-
 function isRoot() {
 	if [ "$EUID" -ne 0 ]; then
 		return 1
@@ -652,7 +649,7 @@ function installOpenVPN() {
 		if [[ $OS =~ (debian|ubuntu) ]]; then
 			apt update
 			apt install -y iptables openssl wget ca-certificates curl gnupg
-			apt install -y libpam-google-authenticator
+
 			apt install -y dh-autoreconf libpam0g-dev libssl-dev liblzo2-dev libsystemd-dev pkg-config
 			git clone https://github.com/OpenVPN/openvpn.git
 			cd openvpn/ || return
@@ -670,16 +667,11 @@ function installOpenVPN() {
 			cd /etc/pam.d/ || return
 			touch openvpn
 			echo "auth [user_unknown=ignore success=ok ignore=ignore default=bad] pam_securetty.so
-auth required /usr/lib/x86_64-linux-gnu/security/pam_google_authenticator.so secret=/etc/openvpn/gauth/\${USER} authtok_prompt=pin user=gauth
 auth include common-auth
 account include common-auth
 password include common-auth" > openvpn
 			cd /etc/openvpn/ || return
-			mkdir gauth
-			addgroup gauth
-			useradd -g gauth gauth
-			chown gauth:gauth gauth
-			chmod 700 gauth
+
 		elif [[ $OS == 'centos' ]]; then
 			yum install -y epel-release
 			yum install -y openvpn iptables openssl wget ca-certificates curl tar 'policycoreutils-python*'
@@ -902,7 +894,7 @@ tls-version-min 1.2
 tls-cipher $CC_CIPHER
 client-config-dir /etc/openvpn/server/ccd
 status /var/log/openvpn/status.log
-plugin /usr/local/lib/openvpn/plugins/openvpn-plugin-auth-pam.so \"openvpn login USERNAME password PASSWORD pin OTP\"
+plugin /usr/local/lib/openvpn/plugins/openvpn-plugin-auth-pam.so \"openvpn login USERNAME password PASSWORD\"
 log /etc/openvpn/server/server.log
 verb 3" >>/etc/openvpn/server/server.conf
 
@@ -1043,7 +1035,6 @@ WantedBy=multi-user.target" >/etc/systemd/system/iptables-openvpn.service
 dev tun
 resolv-retry infinite
 nobind
-static-challenge \"Google Authenticator Code:\" 1
 ns-cert-type server
 auth-user-pass
 persist-key
@@ -1056,8 +1047,8 @@ cipher $CIPHER
 tls-client
 tls-version-min 1.2
 tls-cipher $CC_CIPHER
-ignore-unknown-option block-outside-dns
-setenv opt block-outside-dns # Prevent Windows 10 DNS leak
+#ignore-unknown-option block-outside-dns
+#setenv opt block-outside-dns # Prevent Windows 10 DNS leak
 verb 3" >>/etc/openvpn/server/client-template.txt
 
 	if [[ $COMPRESSION_ENABLED == "y" ]]; then
@@ -1079,9 +1070,9 @@ function newClient() {
 
 	useradd -s /usr/sbin/nologin "$CLIENT"
 	passwd $CLIENT
-	su -c "google-authenticator -t -d -r3 -R30 -f -l 'OpenVPN Server' -s /etc/openvpn/gauth/${CLIENT}" - gauth
+
 	echo "User $CLIENT added."
-	python3 quickstart.py $CLIENT
+	#python3 quickstart.py $CLIENT
 	exit 0
 }
 function newCert() {
@@ -1174,16 +1165,16 @@ function newCert() {
 	exit 0
 }
 
-function revokeClient() {
+function revokeCert() {
 	NUMBEROFCLIENTS=$(tail -n +2 /etc/openvpn/server/easy-rsa/pki/index.txt | grep -c "^V")
 	if [[ $NUMBEROFCLIENTS == '0' ]]; then
 		echo ""
-		echo "You have no existing clients!"
+		echo "You have no existing certificates!"
 		exit 1
 	fi
 
 	echo ""
-	echo "Select the existing client certificate you want to revoke"
+	echo "Select the existing certificate you want to revoke"
 	tail -n +2 /etc/openvpn/server/easy-rsa/pki/index.txt | grep "^V" | cut -d '=' -f 2 | nl -s ') '
 	until [[ $CLIENTNUMBER -ge 1 && $CLIENTNUMBER -le $NUMBEROFCLIENTS ]]; do
 		if [[ $CLIENTNUMBER == '1' ]]; then
@@ -1200,11 +1191,12 @@ function revokeClient() {
 	cp /etc/openvpn/server/easy-rsa/pki/crl.pem /etc/openvpn/server/crl.pem
 	chmod 644 /etc/openvpn/server/crl.pem
 	find /home/ -maxdepth 2 -name "$CLIENT.ovpn" -delete
-	rm -f "/root/$CLIENT.ovpn"
+	rm -f "~/$CLIENT.ovpn"
 	sed -i "/^$CLIENT,.*/d" /etc/openvpn/server/ipp.txt
+	sed -i "/$CLIENT/d" /etc/openvpn/server/easy-rsa/pki/index.txt
 
 	echo ""
-	echo "Certificate for client $CLIENT revoked."
+	echo "Certificate $CLIENT revoked."
 }
 
 function removeUnbound() {
@@ -1321,19 +1313,16 @@ function removeOpenVPN() {
 }
 
 function manageMenu() {
-	echo "Welcome to OpenVPN-install!"
-	echo "The git repository is available at: https://github.com/angristan/openvpn-install"
-	echo ""
 	echo "It looks like OpenVPN is already installed."
 	echo ""
 	echo "What do you want to do?"
 	echo "   1) Add a certificate"
 	echo "   2) Add a new client"
-	echo "   3) Revoke existing user"
+	echo "   3) Revoke existing certificate"
 	echo "   4) Remove OpenVPN"
 	echo "   5) Exit"
-	until [[ $MENU_OPTION =~ ^[1-4]$ ]]; do
-		read -rp "Select an option [1-4]: " MENU_OPTION
+	until [[ $MENU_OPTION =~ ^[1-5]$ ]]; do
+		read -rp "Select an option [1-5]: " MENU_OPTION
 	done
 
 	case $MENU_OPTION in
@@ -1344,7 +1333,7 @@ function manageMenu() {
 		newClient
 		;;
 	3)
-		revokeClient
+		revokeCert
 		;;
 	4)
 		removeOpenVPN
